@@ -1,0 +1,5 @@
+# Clinic Appointments
+# Format: appointment {username} {date} appointment hemant 25 July 2025
+appointment hemant 26 July 2025
+appointment hemant 27 july
+appointment hemant 1 aug
