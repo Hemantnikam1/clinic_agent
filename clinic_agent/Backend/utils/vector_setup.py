@@ -1,5 +1,6 @@
 import os
 import getpass
+from dotenv import load_dotenv
 
 # --- Text Splitter ---
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -9,14 +10,15 @@ from langchain_chroma import Chroma
 
 # --- LLM and Embedding Models ---
 # Import the same embedding model classes as your main agent
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
-from langchain_ollama import OllamaEmbeddings
+from .agent_configuration import embedding_fn
 
 
 # --- Configuration ---
 
 
-GEMINI_API_KEY = "AIzaSyBIeGseLcEpMd4S4TnLi8m4ECqKE_h8akQ"
+load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
+
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 # Set the API key in the environment for any library that might need it
 os.environ["GEMINI_API_KEY"] = GEMINI_API_KEY
@@ -35,12 +37,6 @@ print(f"[ChromaDB] Using directory: {persist_directory}")
 # --- Select your Embedding Model ---
 # Make sure this matches the model used in your main agent script.
 # Currently set to Gemini as per your last agent file.
-
-# Option 1: Gemini Embeddings
-embedding_fn = GoogleGenerativeAIEmbeddings(model="models/embedding-001", google_api_key=GEMINI_API_KEY)
-
-# Option 2: Ollama Embeddings
-# embedding_fn = OllamaEmbeddings(model="llama3")
 
 
 def setup_hospital_database():
@@ -74,7 +70,7 @@ def setup_hospital_database():
     documents = text_splitter.create_documents([hospital_info])
     print(f"Splitting text into {len(documents)} chunks.")
 
-    # Create a new Chroma collection and add the documents
+    
     # This will create the collection or overwrite it if it already exists.
     vector_store = Chroma.from_documents(
         documents,
@@ -87,6 +83,4 @@ def setup_hospital_database():
 
 
 if __name__ == "__main__":
-    # This block allows you to run the script directly from your terminal
-    # In your terminal, navigate to the `utils` directory and run: python setup_database.py
     setup_hospital_database()

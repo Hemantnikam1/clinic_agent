@@ -1,5 +1,5 @@
 from langgraph.graph import StateGraph, END
-from typing import TypedDict
+from typing import TypedDict, List
 from langchain_core.runnables import RunnableLambda
 from langchain_core.tools import tool
 
@@ -8,11 +8,12 @@ import asyncio
 import uuid
 import os
 import json
+from dotenv import load_dotenv
 
 # Corrected imports to use modern packages and avoid errors
 from langchain_chroma import Chroma
-from langchain_ollama import ChatOllama, OllamaEmbeddings
-from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
+
+from .agent_configuration import llm, embedding_fn
 
 # --- Configuration ---
 try:
@@ -22,24 +23,11 @@ except NameError:
 print(f"[ChromaDB] Persist directory: {persist_directory}")
 
 
-# --- Gemini LLM and Embeddings (Restored as per your original code) ---
-# Uncomment below to use Gemini
-# from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
-#
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AIzaSyBIeGseLcEpMd4S4TnLi8m4ECqKE_h8akQ") # Replace with your actual API key or set as env var
-llm = ChatGoogleGenerativeAI(model="gemini-1.5-pro-latest", google_api_key=GEMINI_API_KEY)
-embedding_fn = GoogleGenerativeAIEmbeddings(model="models/embedding-001", google_api_key=GEMINI_API_KEY)
-
-
-# --- Ollama LLM and Embeddings (Active as per your original code) ---
-# llm = ChatOllama(model="llama3")
-# embedding_fn = OllamaEmbeddings(model="llama3")
-
-
-# --- Graph State Definition (Unchanged) ---
+# --- Graph State Definition  ---
 class AgentState(TypedDict):
     message: str
     session_id: str
+    agent_persona: str  
     session_context: list
     llm_response: str
     tool: str
@@ -49,22 +37,32 @@ class AgentState(TypedDict):
     date: str
     final_response: str
 
-# --- Nodes and Functions (Unchanged) ---
+# --- Nodes and Functions---
 
 async def load_context(input: dict):
+    """Loads the initial context, including the agent's persona."""
     message = input["message"]
     session_id = input["session_id"]
+    # Get agent_persona from input, with a default value
+    agent_persona = input.get("agent_persona", "You are a helpful clinic assistant.")
     await upsert_chroma_session(session_id, [message], [])
     context = await get_context_by_session_id(session_id)
-    return {"message": message, "session_id": session_id, "session_context": context}
+    return {
+        "message": message,
+        "session_id": session_id,
+        "agent_persona": agent_persona,
+        "session_context": context
+    }
 
 async def userintend(input: AgentState):
+    """Determines the user's intent using the agent's persona."""
     print(f"[userintend] input: {input}")
     message = input["message"]
     session_context = input["session_context"]
     session_id = input["session_id"]
-    system_prompt = (
-        "You are a helpful assistant for a clinic service. Users are messaging only to make enquiries or to perform tasks related to clinics. "
+    agent_persona = input.get("agent_persona", "You are a helpful assistant for a clinic service.")
+
+    task_prompt = (
         "Based on the user's message and the conversation context, determine the user's intent. "
         "If the user wants to book an appointment, check if they provided their name and preferred date in the context. Important: Only check for name and date. "
         "If the name and date have already been provided, take them from the provided context. "
@@ -76,7 +74,8 @@ async def userintend(input: AgentState):
         "Always be concise and clear in your responses. Keep responses crisp and to the point.\n"
     )
     context_str = "\n".join(session_context)
-    prompt = f"{system_prompt}Context so far:\n{context_str}\n\nUser: {message}\nAssistant:"
+    prompt = f"System Persona: {agent_persona}\n\nYour Task: {task_prompt}\n\nContext so far:\n{context_str}\n\nUser: {message}\nAssistant:"
+    
     response = await llm.ainvoke(prompt)
     response_text = response.content if hasattr(response, 'content') else str(response)
     print(f"[userintend] LLM response: {response_text}")
@@ -97,12 +96,10 @@ def book_appointment(name: str, date: str):
     if not name or not date:
         return {"tool": "book_appointment", "status": "missing_data", "details": f"Missing data - Name received: '{name}', Date received: '{date}'"}
     try:
-        # Correctly handle path for appointments directory
         base_dir = os.path.dirname(__file__) if '__file__' in locals() else os.getcwd()
         appointments_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'appointments')       
         os.makedirs(appointments_dir, exist_ok=True)
         appointments_file = os.path.join(appointments_dir, 'appointments.txt')
-        print("HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH",appointments_file)
         appointment_entry = f"appointment {name} {date}\n"
         with open(appointments_file, 'a', encoding='utf-8') as f:
             f.write(appointment_entry)
@@ -112,28 +109,19 @@ def book_appointment(name: str, date: str):
 
 @tool
 def enquiry_tool(query: str):
-    """
-    Handles a general enquiry by performing a similarity search on the hospital's information database.
-    """
+    """Handles a general enquiry by performing a similarity search on the hospital's information database."""
     print(f"\n--- [Enquiry Tool] Searching for: '{query}' ---")
     try:
-        # Connect to the existing collection
         vector_store = Chroma(
             embedding_function=embedding_fn,
             persist_directory=persist_directory,
             collection_name="hospital_info"
         )
-
-        # Perform the similarity search
         results = vector_store.similarity_search(query, k=3)
-
         if not results:
             return {"tool": "enquiry_tool", "status": "success", "details": "I could not find specific information about that. Please ask about our services, hours, or location."}
-
-        # Combine the content of the retrieved documents
         retrieved_docs = "\n\n".join([doc.page_content for doc in results])
         print(f"--- [Enquiry Tool] Found relevant info: ---\n{retrieved_docs}\n-----------------------------------------")
-        
         return {"tool": "enquiry_tool", "status": "success", "details": retrieved_docs}
     except Exception as e:
         print(f"[Enquiry Tool] Error: {e}")
@@ -141,7 +129,7 @@ def enquiry_tool(query: str):
 
 async def tool_caller(input: AgentState):
     llm_response = input["llm_response"]
-    message = input["message"] # Get the original user message
+    message = input["message"]
     name = ""
     date = ""
     is_json_action = False
@@ -163,42 +151,47 @@ async def tool_caller(input: AgentState):
     if is_json_action:
         return book_appointment.invoke({"name": name, "date": date})
     
-    # Check for enquiry intent and pass the user's message as the query
     if "enquiry" in llm_response.lower():
         return enquiry_tool.invoke({"query": message})
     else:
         return {"tool": None, "status": "no_tool_called", "details": "No tool was called."}
 
 async def tool_result_to_llm(input: AgentState):
+    """Generates the final response using the agent's persona."""
     tool_result = input
     tool = tool_result.get("tool")
     status = tool_result.get("status")
     details = tool_result.get("details")
     session_id = input.get("session_id")
+    agent_persona = input.get("agent_persona", "You are a helpful assistant.")
     session_context = await get_context_by_session_id(session_id)
-    prompt = ""
+    task_prompt = ""
     user_question = input.get("message")
+
     if tool == "book_appointment":
         if status == "success":
             name = tool_result.get("name", "")
             date = tool_result.get("date", "")
-            prompt = (f"The user's appointment has been booked successfully for {name} on {date}. "
+            task_prompt = (f"The user's appointment has been booked successfully for {name} on {date}. "
                       "Respond to the user with a confirmation message that includes their name and date. The message should be crisp and to the point.")
         elif status == "missing_data":
-            prompt = ("The appointment booking failed because some required information is missing. "
+            task_prompt = ("The appointment booking failed because some required information is missing. "
                       "Generate a crisp, short, and on-point message. Ask the user to provide their name and preferred date.")
         else: # status == "error"
-            prompt = (f"There was an error booking the appointment: {details}. Apologize to the user and ask them to try again.")
+            task_prompt = (f"There was an error booking the appointment: {details}. Apologize to the user and ask them to try again.")
     elif tool == "enquiry_tool" and status == "success":
-        prompt = (
-                    "You are a helpful clinic assistant. Answer the user's question based *only* on the provided context below.\n"
+        task_prompt = (
+                    "Answer the user's question based *only* on the provided context below.\n"
                     "Keep the answer concise and directly address exactly what was asked.\n\n"
+                    f"SESSION CONTEXT:\n{session_context}\n\n"
                     f"CONTEXT:\n{details}\n\n"
                     f"USER'S QUESTION:\n{user_question}\n\n"
                     "ANSWER:"
                 )    
     else:
-        prompt = (f"There was an issue with the tool call. Details: {details}. Respond to the user with an appropriate message.")
+        task_prompt = (f"There was an issue with the tool call. Details: {details}. Respond to the user with an appropriate message.")
+    
+    prompt = f"System Persona: {agent_persona}\n\nYour Task: {task_prompt}"
     
     response = await llm.ainvoke(prompt)
     response_text = response.content if hasattr(response, 'content') else str(response)
