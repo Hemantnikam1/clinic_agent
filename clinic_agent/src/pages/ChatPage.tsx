@@ -2,12 +2,9 @@ import React, { useState } from 'react';
 import UserMsg from '../components/UserMsg';
 import AgentMsg from '../components/AgentMsg';
 import ChatInput from '../components/ChatInput';
-import { Container, Row, Col, Card } from 'react-bootstrap';
-
-// Dummy service to simulate assistant response
-const dummyAssistantReply = (userMsg: string) => {
-  return `Assistant received: ${userMsg}`;
-};
+import { Container, Row, Col, Card, Spinner } from 'react-bootstrap';
+import { getAssistantResponse } from '../services/assistant';
+import { getSessionId } from '../services/api';
 
 interface Message {
   sender: 'user' | 'assistant';
@@ -17,17 +14,19 @@ interface Message {
 const ChatPage: React.FC = () => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
+  const [loading, setLoading] = useState(false);
 
-  const handleSend = () => {
+  const handleSend = async () => {
     if (!input.trim()) return;
     const userMessage: Message = { sender: 'user', text: input };
     setMessages(prev => [...prev, userMessage]);
     setInput('');
-    // Simulate assistant reply
-    setTimeout(() => {
-      const assistantMessage: Message = { sender: 'assistant', text: dummyAssistantReply(input) };
-      setMessages(prev => [...prev, assistantMessage]);
-    }, 500);
+    setLoading(true);
+    // Get assistant reply from service
+    const assistantReply = await getAssistantResponse(input);
+    const assistantMessage: Message = { sender: 'assistant', text: assistantReply };
+    setMessages(prev => [...prev, assistantMessage]);
+    setLoading(false);
   };
 
   return (
@@ -46,6 +45,13 @@ const ChatPage: React.FC = () => {
                     <AgentMsg message={msg.text} />
                   </div>
                 )
+              )}
+              {loading && (
+                <div className="d-flex justify-content-start align-items-center" style={{ minHeight: 40 }}>
+                  <div style={{ background: '#fff', borderRadius: 12, padding: '8px 16px', boxShadow: '0 1px 4px rgba(0,0,0,0.04)' }}>
+                    <Spinner animation="border" size="sm" />
+                  </div>
+                </div>
               )}
             </Card.Body>
             <Card.Footer className="bg-white p-3 border-0" style={{ borderTop: '1px solid #eee' }}>
